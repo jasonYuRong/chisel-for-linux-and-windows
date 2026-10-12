@@ -1,0 +1,61 @@
+name: Import Chisel amd64 binaries
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/import-chisel.yml']
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+      - name: Download and verify official Chisel v1.12.0 binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip, hashlib, io, pathlib, urllib.request, zipfile
+          base = "https://github.com/jpillora/chisel/releases/download/v1.12.0/"
+          assets = [
+              ("chisel_1.12.0_linux_amd64.gz", "f3f180f1d93aa72cce4e6386f98cc06569a0146fbd65eb4423cf83e6434bcfe6", "chisel", "811362311f13ac4bdc42fe4e7650aca618a68e3a40f930de88536d18b14d2b52"),
+              ("chisel_1.12.0_windows_amd64.zip", "600a8ad6f03bc7f6d285fd01ab6a3f8a657204adaafa5666ade9451d18df1ebc", "chisel.exe", "ca5f8e5247f1a044b8be45ef03187726b9af3ac30fd93fb5bb54144e34ed3738"),
+          ]
+          sums = []
+          for archive, expected, output, expected_binary in assets:
+              with urllib.request.urlopen(base + archive, timeout=120) as response:
+                  data = response.read()
+              assert hashlib.sha256(data).hexdigest() == expected, "Archive checksum mismatch: " + archive
+              if archive.endswith(".gz"):
+                  binary = gzip.decompress(data)
+              else:
+                  with zipfile.ZipFile(io.BytesIO(data)) as z:
+                      names = [n for n in z.namelist() if pathlib.PurePosixPath(n).name.lower() == "chisel.exe"]
+                      assert len(names) == 1, names
+                      binary = z.read(names[0])
+              digest = hashlib.sha256(binary).hexdigest()
+              assert digest == expected_binary, "Binary checksum mismatch: " + output
+              pathlib.Path(output).write_bytes(binary)
+              pathlib.Path(output).chmod(0o755 if output == "chisel" else 0o644)
+              sums.append(digest + "  " + output)
+              print(output, len(binary), digest)
+          pathlib.Path("SHA256SUMS").write_text("\n".join(sums) + "\n")
+          PY
+          file chisel chisel.exe
+          test "$(./chisel --version)" = "1.12.0"
+          sha256sum -c SHA256SUMS
+      - name: Commit verified binaries to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chisel chisel.exe SHA256SUMS
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Add official Chisel v1.12.0 Linux and Windows amd64 binaries"
+          git push origin HEAD:main
